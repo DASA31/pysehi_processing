@@ -1,0 +1,238 @@
+# import libaries
+import xlsxwriter
+import pysehi_edited as ps
+import metadata as md
+import os
+import numpy as np
+import regex
+import tifffile as tf
+from skimage import transform
+import scipy.ndimage as scnd
+from cv2 import matchTemplate as match_template
+from cv2 import TM_CCOEFF_NORMED
+from cv2 import minMaxLoc as min_max_loc
+import math
+import matplotlib.pyplot as plt
+import pathlib
+
+def slash_type(path):
+    if type(pathlib.Path(path)) is pathlib.WindowsPath:
+        return '\\'
+    return '/'
+
+def summary_excel(path_to_files, date: int = None, condition_true: list = None, condition_false: list = None, custom_name=None, is_zeiss=False):
+    data = ps.list_files(path_to_files, date, condition_true, condition_false, load_data=True, custom_name=custom_name, is_zeiss=is_zeiss)
+    paths = []
+    for key in list(data.keys()):
+        paths.append(os.path.split(data[key]['Processed_path'])[0])
+    folder_groups = list(set(paths))
+    for fg in folder_groups:
+        slash = slash_type(fg)
+        init_path = pathlib.Path(fg)
+        init_date = None
+        for part in init_path.parts:
+            m = regex.search(r"(\d{6}[\w-]*)", part)
+            if m:
+                init_date = m.group(1)
+                break
+        if init_date is None:
+            init_date = "unknown_date"
+        if fg.find(init_date) > fg.find('Processed'):
+            if type(pathlib.Path(fg)) is pathlib.WindowsPath:
+                init_mat = fg.split(rf'\{init_date}')[0].split('Processed\\')[1].replace('\\', '_')
+            else:
+                init_mat = fg.split(rf'/{init_date}')[0].split('Processed/')[1].replace('/', '_')
+        else:
+            if type(pathlib.Path(fg)) is pathlib.WindowsPath:
+                parts = fg.split('Reference data\\')
+                init_mat = parts[1].split('\\')[0] if len(parts) > 1 else 'unknown'
+            else:
+                parts = fg.split('Reference data/')
+                init_mat = parts[1].split('/')[0] if len(parts) > 1 else 'unknown'
+        if type(pathlib.Path(fg)) is pathlib.WindowsPath:
+            if len(fg.split(f'{init_date}\\')) > 1:
+                init_exp = fg.split(f'{init_date}\\')[1].replace('\\', '_')
+                workbook = xlsxwriter.Workbook(rf"{init_path}\{init_date}_{init_mat}_{init_exp}_specOut.xlsx")
+            else:
+                workbook = xlsxwriter.Workbook(rf"{init_path}\{init_date}_{init_mat}_specOut.xlsx")
+        else:
+            if len(fg.split(f'{init_date}/')) > 1:
+                init_exp = fg.split(f'{init_date}/')[1].replace('/', '_')
+                workbook = xlsxwriter.Workbook(rf"{init_path}/{init_date}_{init_mat}_{init_exp}_specOut.xlsx")
+            else:
+                workbook = xlsxwriter.Workbook(rf"{init_path}/{init_date}_{init_mat}_specOut.xlsx")
+        worksheetSpec = workbook.add_worksheet('FOV_spec')
+        chartIntensity = workbook.add_chart({'type': 'scatter', 'subtype': 'straight'})
+        chartIntensity.set_title({'name': rf'{init_date}_{init_mat}', 'name_font': {'size': 12}})
+        chartIntensity.set_x_axis({'name': 'Energy [eV]'})
+        chartIntensity.set_y_axis({'name': 'Emission intensity [arb.u.]', 'major_gridlines': {'visible': False}})
+        chartIntensity.set_legend({'position': 'top'})
+        chartNorm = workbook.add_chart({'type': 'scatter', 'subtype': 'straight'})
+        chartNorm.set_title({'name': rf'{init_date}_{init_mat}_norm', 'name_font': {'size': 12}})
+        chartNorm.set_x_axis({'name': 'Energy [eV]'})
+        chartNorm.set_y_axis({'name': 'Emission intensity norm [arb.u.]', 'major_gridlines': {'visible': False}})
+        chartNorm.set_legend({'position': 'top'})
+        countNo = 0
+        for name in data:
+            if fg not in data[name]['Processed_path']:
+                continue
+            dat = data[name]['data']
+            stack_meta = dat.stack_meta
+            eV = dat.eV
+            zprofile = ps.zpro(dat.stack)
+            spec = dat.spec()
+            colNoSpec = countNo * 4
+            worksheetSpec.write(0, 0 + colNoSpec, name)
+            hfw_um = stack_meta['img1'].get('EScan', stack_meta['img1']['Scan'])['HorFieldsize'] * 1e6
+            worksheetSpec.write(0, 1 + colNoSpec, f"HFW = {hfw_um} um")
+            worksheetSpec.write(1, 0 + colNoSpec, 'Energy [eV]')
+            worksheetSpec.write(1, 1 + colNoSpec, 'Z-profile')
+            worksheetSpec.write(1, 2 + colNoSpec, 'Emission intensity')
+            worksheetSpec.write(1, 3 + colNoSpec, 'Emission intensity norm')
+            start_row = 2
+            end_row = start_row + len(eV) - 1
+            for row_num, value in enumerate(eV):
+                worksheetSpec.write(row_num + start_row, 0 + colNoSpec, float(value))
+            for row_num, value in enumerate(zprofile):
+                worksheetSpec.write(row_num + start_row, 1 + colNoSpec, float(value))
+            for row_num, value in enumerate(spec):
+                worksheetSpec.write(row_num + start_row, 2 + colNoSpec, float(value))
+            spec_max = float(np.max(spec)) if len(spec) else 1.0
+            for row_num, value in enumerate(spec):
+                worksheetSpec.write(row_num + start_row, 3 + colNoSpec, (float(value) / spec_max) if spec_max != 0 else 0.0)
+            chartNorm.add_series({
+                'name': name,
+                'categories': ['FOV_spec', start_row, 0 + colNoSpec, end_row, 0 + colNoSpec],
+                'values': ['FOV_spec', start_row, 3 + colNoSpec, end_row, 3 + colNoSpec]
+            })
+            chartIntensity.add_series({
+                'name': name,
+                'categories': ['FOV_spec', start_row, 0 + colNoSpec, end_row, 0 + colNoSpec],
+                'values': ['FOV_spec', start_row, 2 + colNoSpec, end_row, 2 + colNoSpec]
+            })
+            proc_path = data[name]['Processed_path']
+            esb_img = os.path.join(proc_path, 'ESB', 'esb_avg_img_scaled.png')
+            meta_plot = os.path.join(proc_path, 'Metadata', 'esb_stack_meta_plots.png')
+            if os.path.exists(esb_img):
+                worksheetSpec.insert_image(end_row + 2, 0 + colNoSpec, esb_img, {'x_scale': 0.555, 'y_scale': 0.555})
+            if os.path.exists(meta_plot):
+                worksheetSpec.insert_image(end_row + 12, 0 + colNoSpec, meta_plot, {'x_scale': 0.48, 'y_scale': 0.48})
+            countNo += 1
+        worksheetSpec.insert_chart(0, 4 + colNoSpec, chartNorm)
+        worksheetSpec.insert_chart(15, 4 + colNoSpec, chartIntensity)
+        workbook.close()
+
+def location_mosaic(path_to_folder, path_to_img_overview=None, condition_true=None, condition_false=None, path_to_img_template=None, is_zeiss=False):
+    slash = slash_type(path_to_folder)
+    loc_dict = {}
+    if path_to_img_overview is not None:
+        if '.tif' in path_to_img_overview:
+            img_over, meta_over = ps.load_single_file(path_to_img_overview)
+        else:
+            dat_over = ps.data(path_to_img_overview)
+            img_over, meta_over = dat_over.img_avg(), dat_over.stack_meta['img1']
+        loc_dict['loc_img'] = {}
+        loc_dict['loc_img']['r'] = meta_over['Stage']['StageR']
+        loc_dict['loc_img']['t'] = meta_over['Stage']['StageT']
+        loc_dict['loc_img']['x'] = meta_over['Stage']['StageX']
+        loc_dict['loc_img']['y'] = meta_over['Stage']['StageY']
+        loc_dict['loc_img']['z'] = meta_over['Stage']['StageZ']
+        loc_dict['loc_img']['Hor'] = meta_over['Scan']['HorFieldsize']
+        loc_dict['loc_img']['Ver'] = meta_over['Scan']['VerFieldsize']
+        l, r = loc_dict['loc_img']['x'] - loc_dict['loc_img']['Hor'] / 2, loc_dict['loc_img']['x'] + loc_dict['loc_img']['Hor'] / 2
+        b, t = loc_dict['loc_img']['y'] - loc_dict['loc_img']['Ver'] / 2, loc_dict['loc_img']['y'] + loc_dict['loc_img']['Ver'] / 2
+        img_over_corners = np.array([[l, r, r, l], [t, t, b, b]]).T
+        ResX, ResY = meta_over['Image']['ResolutionX'], meta_over['Image']['ResolutionY']
+        rot_anticlock = -(loc_dict['loc_img']['r'] / np.pi) * 180
+        img_over_r = transform.rotate(img_over[0:ResY, 0:ResX], rot_anticlock, center=[0, 0], resize=True)
+    files = ps.list_files(path_to_folder, condition_true=condition_true, condition_false=condition_false, load_data=True)
+    paths = np.empty([1, 2])
+    for sub in files:
+        loc_dict[sub] = {}
+        stack_metadata = files[sub]['data'].stack_meta
+        for prop in ['r', 't', 'x', 'y', 'z']:
+            k, val = md.metadata_params(files[sub]['data'], prop, readable=False)
+            loc_dict[sub][prop] = val
+        loc_dict[sub]['Hor'] = stack_metadata['img1']['Scan']['HorFieldsize']
+        loc_dict[sub]['Ver'] = stack_metadata['img1']['Scan']['VerFieldsize']
+        x1, x2 = loc_dict[sub]['x'] - loc_dict[sub]['Hor'] / 2, loc_dict[sub]['x'] + loc_dict[sub]['Hor'] / 2
+        y1, y2 = loc_dict[sub]['y'] + loc_dict[sub]['Ver'] / 2, loc_dict[sub]['y'] - loc_dict[sub]['Ver'] / 2
+        path = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2], [x1, y1]])
+        p_rs = np.empty([1, 2])
+        for p in path:
+            p_r = np.array(rotate([0, 0], p, loc_dict[sub]['r']))
+            p_rs = np.vstack([p_rs, p_r])
+        loc_dict[sub]['path'] = np.vstack(p_rs)
+        loc_dict[sub]['path'] = np.delete(loc_dict[sub]['path'], 0, 0)
+        paths = np.vstack([paths, path])
+    paths = np.delete(paths, 0, 0)
+    x_min, x_max = np.min(paths[:, 0]), np.max(paths[:, 0])
+    y_min, y_max = np.min(paths[:, 1]), np.max(paths[:, 1])
+    lic_r = np.empty([1, 2])
+    for p in img_over_corners:
+        p_r = np.array(rotate([0, 0], p, loc_dict['loc_img']['r']))
+        lic_r = np.vstack([lic_r, p_r])
+    lic_r = np.delete(lic_r, 0, 0)
+    e_l, e_r = np.min(lic_r[:, 0]), np.max(lic_r[:, 0])
+    e_b, e_t = np.min(lic_r[:, 1]), np.max(lic_r[:, 1])
+    plt.imshow(img_over_r, cmap='gray', extent=[e_l * 1e6, e_r * 1e6, e_b * 1e6, e_t * 1e6])
+    for sub in loc_dict:
+        if 'loc_img' not in sub:
+            label = sub.split('_', maxsplit=1)[1]
+            plt.plot(loc_dict[sub]['path'][:, 0] * 1e6, loc_dict[sub]['path'][:, 1] * 1e6, label=label)
+            plt.text(loc_dict[sub]['path'][:, 0][0] * 1e6, loc_dict[sub]['path'][:, 1][0] * 1e6, label, c=[189 / 255, 195 / 255, 199 / 255, 1])
+    plt.xlabel('x [\u03BCm]')
+    plt.ylabel('y [\u03BCm]')
+    plt.savefig(rf'{path_to_folder}{slash}locations_overview.png', dpi=400, transparent=True)
+    plt.show()
+    if path_to_img_template is not None:
+        if '.tif' in path_to_img_template:
+            img_temp, meta_temp = ps.load_single_file(path_to_img_template)
+            meta_img1 = meta_temp
+            loc_dict['template_img'] = {}
+            loc_dict['template_img']['r'] = meta_img1['Stage']['StageR']
+            loc_dict['template_img']['t'] = meta_img1['Stage']['StageT']
+            loc_dict['template_img']['x'] = meta_img1['Stage']['StageX']
+            loc_dict['template_img']['y'] = meta_img1['Stage']['StageY']
+            loc_dict['template_img']['z'] = meta_img1['Stage']['StageZ']
+            loc_dict['template_img']['Hor'] = meta_img1['Scan']['HorFieldsize']
+            loc_dict['template_img']['Ver'] = meta_img1['Scan']['VerFieldsize']
+        else:
+            dat_temp = ps.data(path_to_img_template)
+            img_temp, meta_temp = dat_temp.img_avg(), dat_temp.stack_meta['img1']
+            loc_dict['template_img'] = {}
+            for prop in ['r', 't', 'x', 'y', 'z']:
+                _, val = md.metadata_params(dat_temp, prop, readable=False)
+                loc_dict['template_img'][prop] = val
+            loc_dict['template_img']['Hor'] = meta_temp['Scan']['HorFieldsize']
+            loc_dict['template_img']['Ver'] = meta_temp['Scan']['VerFieldsize']
+        tx1, tx2 = loc_dict['template_img']['x'] - loc_dict['template_img']['Hor'] / 2, loc_dict['template_img']['x'] + loc_dict['template_img']['Hor'] / 2
+        ty1, ty2 = loc_dict['template_img']['y'] + loc_dict['template_img']['Ver'] / 2, loc_dict['template_img']['y'] - loc_dict['template_img']['Ver'] / 2
+        t_path = np.array([[tx1, ty1], [tx2, ty1], [tx2, ty2], [tx1, ty2], [tx1, ty1]])
+        p_rs = np.empty([1, 2])
+        for p in t_path:
+            p_r = np.array(rotate([0, 0], p, loc_dict['template_img']['r']))
+            p_rs = np.vstack([p_rs, p_r])
+        loc_dict['template_img']['path'] = np.vstack(p_rs)
+        loc_dict['template_img']['path'] = np.delete(loc_dict['template_img']['path'], 0, 0)
+        temp_ResX, temp_ResY = meta_temp['Image']['ResolutionX'], meta_temp['Image']['ResolutionY']
+        temp_rot_anticlock = -(loc_dict['template_img']['r'] / np.pi) * 180
+        img_temp_r = transform.rotate(img_temp[0:temp_ResY, 0:temp_ResX], temp_rot_anticlock, center=[0, 0], resize=True)
+        img_over_pwidth = meta_over['Scan']['PixelWidth']
+        img_temp_pwidth = meta_temp['Scan']['PixelWidth']
+        scale_factor = img_temp_pwidth / img_over_pwidth
+        img_temp_rrs = transform.resize(img_temp_r, output_shape=(int(img_temp_r.shape[0] * scale_factor), int(img_temp_r.shape[1] * scale_factor)))
+        ypad = img_over_r.shape[0] - img_temp_rrs.shape[0]
+        xpad = img_over_r.shape[1] - img_temp_rrs.shape[1]
+        img_temp_rrsp = np.pad(img_temp_rrs, ((0, ypad), (0, xpad)), mode='constant')
+        result = match_template(np.array(img_temp_rrs, dtype='uint8'), np.array(img_over_r, dtype='uint8'), TM_CCOEFF_NORMED)
+        minV, maxV, minpt, maxpt = min_max_loc(result)
+        tx, ty = np.asarray(maxpt)
+        img_temp_rrsps = scnd.shift(img_temp_rrsp, shift=[ty, tx])
+
+def rotate(origin, point, angle):
+    ox, oy = origin
+    px, py = point
+    qx = ox + math.cos(-angle) * (px - ox) - math.sin(-angle) * (py - oy)
+    qy = oy + math.sin(-angle) * (px - ox) + math.cos(-angle) * (py - oy)
+    return qx, qy
