@@ -1,4 +1,4 @@
-# import libraries
+# Import libraries
 import os
 import glob
 import cv2
@@ -32,8 +32,6 @@ def folder_finder(raw_folder):
     esb = os.path.join(raw_folder, "ESB")
     inlens_files = sorted(glob.glob(os.path.join(inlens, "*.tif*")))
     esb_files = sorted(glob.glob(os.path.join(esb, "*.tif*")))
-    print(f"InLens folder: {inlens_files}")
-    print(f"ESB folder: {esb_files}")
     return inlens_files, esb_files
 
 def process_files(files: str or dict, AC: bool = True, condition_true: list = None, condition_false: list = None, register=True, custom_name=None, colour_thirds=None, overview_img: str = None, is_zeiss: bool = False):
@@ -46,9 +44,9 @@ def process_files(files: str or dict, AC: bool = True, condition_true: list = No
                 init_date = m.group(1)
                 break
         if init_date is None:
-            print(r"Date missing! Input a path to raw files in the format '...\material\YYMMDD\Raw\...\...\data_folder')")
+            print(r"Date missing! Input a path to raw files in the format '...\material\YYMmetadataD\Raw\...\...\data_folder')")
         elif 'Raw' not in files_pl.parts:
-            print(r"Input a path to raw files in the format '...\material\YYMMDD\Raw\...\...\data_folder')")
+            print(r"Input a path to raw files in the format '...\material\YYMmetadataD\Raw\...\...\data_folder')")
         else:
             data_files = list_files(files, condition_true, condition_false, custom_name=custom_name, is_zeiss=is_zeiss)
             print(rf'found {len(data_files)} data folders for processing')
@@ -72,16 +70,16 @@ def process_files(files: str or dict, AC: bool = True, condition_true: list = No
                 dat.save_data(reg=register)
                 data_files[name]['stack_meta'] = dat.stack_meta
                 metadata.metadata_params(dat, write=True, out_folder_override=True)
-                print(rf"processed!......{root.replace('Raw', 'Processed')}")
+                print(rf"Processed!......{root.replace('Raw', 'Processed')}")
             else:
                 if AC is False:
-                    print(rf'loading......{root}')
+                    print(rf'Loading......{root}')
                     data_files[name]['Processed_path'] = root.replace('Raw', 'Processed')
                     dat = data(root, AC=AC, reg=register, is_zeiss=is_zeiss)
                     dat.save_data(reg=register)
                     data_files[name]['stack_meta'] = dat.stack_meta
                     metadata.metadata_params(dat, write=True, out_folder_override=True)
-                    print(rf"processed!......{root.replace('Raw', 'Processed')}")
+                    print(rf"Processed!......{root.replace('Raw', 'Processed')}")
                 else:
                     print(rf'AC is True, discounted......{root}')
     if isinstance(files, str):
@@ -106,7 +104,6 @@ def list_files(path_to_files, date: int = None, condition_true: list = None, con
             if m:
                 found_date = m.group(1)
                 break
-
         if date is not None and not any(regex.search(rf"{date}", p) for p in root_pl.parts):
             continue
         if condition_true is not None and not any(c in root for c in condition_true):
@@ -202,8 +199,7 @@ def load(folder, AC=True, register=True, calib=None, uint8=False, is_zeiss=False
     """
     slash = slash_type(folder)
     name = os.path.split(folder)[1]
-
-    # --- Processed folder branch ---
+    # Processed folder
     if 'Processed' in folder:
         # TIFF stack directly
         if 'tiff' in folder:
@@ -231,7 +227,6 @@ def load(folder, AC=True, register=True, calib=None, uint8=False, is_zeiss=False
                             stack_filename = os.path.split(stack_file)[1].split('.tiff')[0]
                             break
 
-        # Optional conversion
         if uint8:
             stack = img_as_ubyte(stack)
         dtype_info = np.iinfo(stack.dtype)
@@ -240,43 +235,54 @@ def load(folder, AC=True, register=True, calib=None, uint8=False, is_zeiss=False
         stack_meta_files = glob.glob(rf'{folder}{slash}Metadata{slash}*stack_meta*.json')
         if len(stack_meta_files) == 0 and '_AC_' in os.path.split(folder)[1]:
             stack_meta_files = glob.glob(rf'{folder.split("_AC")[0]}{slash}Metadata{slash}*stack_meta*.json')
-        with open(stack_meta_files[0]) as file:
-            stack_meta = json.load(file)
+            with open(stack_meta_files[0]) as file:
+                stack_meta = json.load(file)
+            file.close()
+        else:
+            with open(stack_meta_files[0]) as file:
+                stack_meta = json.load(file)
+            file.close()
 
         # Determine system & analyser
         sys, analyser = sys_type(stack_meta['img1'])
         ana_voltage = []
 
         if is_zeiss:
-            if sys:
+            if sys == True:
                 for page in stack_meta:
                     ana_voltage.append(stack_meta[page]['TLD']['Mirror'])
             coeffs = np.array(1)
             eV = np.array(np.array(ana_voltage) * coeffs)
         else:
-            for page in stack_meta:
-                if sys:
+            if sys == True:
+                for page in stack_meta:
                     ana_voltage.append(stack_meta[page]['TLD']['Mirror'])
-                else:
-                    if 'Deflector' in stack_meta['img1']['TLD']:
+            else:
+                if 'Deflector' in stack_meta['img1']['TLD']:
+                    for page in stack_meta:
                         ana_voltage.append(stack_meta[page]['TLD']['Deflector'])
-            if sys:
+                else:
+                    print('Warning, no Deflector in stack_meta, searching raw data for Log.csv')
+                    ana_voltage = np.loadtxt(rf"{folder.replace('Processed','Raw')}{slash}Log.csv",delimiter=',', skiprows=2)[:,1]
+           
+            if sys == True:
                 if calib is None:
                     csv_file_path = calib_file(folder)
                     if '.csv' in csv_file_path:
                         coeffs = np.loadtxt(csv_file_path)
-                    else:
+                    if csv_file_path == 'no calibration file':
                         coeffs = np.array((-0.39866667, 6))
-                elif isinstance(calib, str):
+                if type(calib) is str:
                     coeffs = np.loadtxt(calib)
                 eV = np.array(np.polyval(coeffs, ana_voltage))
             else:
                 coeffs = np.array(1 / 2.84)
                 eV = np.array(np.array(ana_voltage) * coeffs)
-
+            print("Calibration Done!")
+        
         return stack, stack_meta, eV, dtype_info, name, coeffs, stack_filename
 
-    # --- Raw folder branch ---
+    # Raw folder 
     if 'Raw' in folder:
         stack_filename = f"{name}_stack"
         inlens_files, esb_files = folder_finder(folder)
@@ -287,11 +293,11 @@ def load(folder, AC=True, register=True, calib=None, uint8=False, is_zeiss=False
             H, W = esb_ref.shape
             dtype_info = np.iinfo(esb_ref.dtype)
 
-            # System type from first inlens file
-            meta0 = load_single_file(inlens_files[0], load_img=False)
-            sys, analyser = sys_type(meta0)
+            # System type from first InLens file
+            _, metadata = load_single_file(inlens_files[0], load_img=False)
+            sys, analyser = sys_type(metadata)
 
-            # Load inlens + ESB stacks
+            # Load InLens + ESB stacks
             inlens_stack = [img_as_float(tf.imread(f)) for f in inlens_files]
             esb_stack = [img_as_float(tf.imread(f)) for f in esb_files]
 
@@ -305,26 +311,27 @@ def load(folder, AC=True, register=True, calib=None, uint8=False, is_zeiss=False
                 template = inlens_stack[-1][yi:yi + temp_roi[roi_name]['height'],
                                              xi:xi + temp_roi[roi_name]['width']]
             else:
-                template, temp_path, _ = template_crop(inlens_stack[-1], H, W, meta0['Scan']['HorFieldsize'])
+                template, temp_path, _ = template_crop(inlens_stack[-1], H, W, metadata['Scan']['HorFieldsize'])
                 xi, yi = int(temp_path[0, 0]), int(temp_path[0, 1])
 
-            # Align inlens stack
+            # Align InLens stack
             shifts = []
             ref_inlens = inlens_stack[-1]
             for img_inlens in inlens_stack:
                 if register:
                     try:
-                        _, dy, dx = align_img_template(ref_inlens, img_inlens, template, H, W, yi, xi)
+                        _, shift_y, shift_x = align_img_template(ref_inlens, img_inlens, template, H, W, yi, xi)
                     except:
-                        _, dy, dx = align_img_transform(ref_inlens, img_inlens)
+                        _, shift_y, shift_x = align_img_transform(ref_inlens, img_inlens)
                 else:
-                    dx, dy = 0.0, 0.0
-                shifts.append((float(dx), float(dy)))
+                    shift_x, shift_y = 0.0, 0.0
+                                
+                shifts.append((float(shift_x), float(shift_y)))
 
             # Apply shifts to ESB stack
             imgs = []
-            for (dx, dy), img_esb in zip(shifts, esb_stack):
-                tform = transform.EuclideanTransform(translation=(dx, dy))
+            for (shift_y, shift_x), img_esb in zip(shifts, esb_stack):
+                tform = transform.EuclideanTransform(translation=(shift_x, shift_y))
                 reg_esb = transform.warp(img_esb, tform, preserve_range=True)
                 imgs.append(reg_esb)
 
@@ -341,34 +348,37 @@ def load(folder, AC=True, register=True, calib=None, uint8=False, is_zeiss=False
             # Build stack metadata and merge inlens metadata
             stack_meta = {}
             ana_voltage = []
-            for i, (fi, fe, (dx, dy)) in enumerate(zip(inlens_files, esb_files, shifts), start=1):
-                _, md_inlens = load_single_file(fi, load_img=False)
-                _, md_esb = load_single_file(fe, load_img=True)
+            for i, (fi, fe, (shift_x, shift_y)) in enumerate(zip(inlens_files, esb_files, shifts), start=1):
+                _, metadata_inlens = load_single_file(fi, load_img=False)
+                _, metadata_esb = load_single_file(fe, load_img=True)
                 page = f"img{i}"
-                stack_meta[page] = md_esb.copy()
-                stack_meta[page]['InLens'] = md_inlens
+                stack_meta[page] = metadata_esb.copy()
+                stack_meta[page]['InLens'] = metadata_inlens
                 stack_meta[page]['Processing'] = {
                     'file_inlens': fi,
                     'file_esb': fe,
-                    'transformation': {'x': float(dx), 'y': float(dy)},
+                    'transformation': {'x': float(shift_x), 'y': float(shift_y)},
                     'temp_match': {'xi': float(xi), 'yi': float(yi)}
                 }
-                ana_voltage.append(md_esb['TLD'][analyser])
+                ana_voltage.append(metadata_esb['TLD'][analyser])
 
             # Convert to original dtype
             stack = np.array(stack_f * dtype_info.max, dtype=dtype_info.dtype)
 
             # Energy calibration
             if is_zeiss:
-                coeffs = np.array(1)
-                eV = np.array(np.array(ana_voltage) * coeffs)
+                if sys == True:
+                    coeffs = np.array(1)
+                    eV = np.array(np.array(ana_voltage) * coeffs)
+                else:
+                    print('Warning, Zeiss data should be ordered in V, setting sys=True for eV conversion')
             else:
-                if sys:
+                if sys == True:
                     if calib is None:
                         csv_file_path = calib_file(folder)
                         if '.csv' in csv_file_path:
                             coeffs = np.loadtxt(csv_file_path)
-                        else:
+                        if csv_file_path == 'no calibration file':
                             coeffs = np.array((-0.39866667, 6))
                     elif isinstance(calib, str):
                         coeffs = np.loadtxt(calib)
@@ -423,7 +433,6 @@ def reformat_zeiss_metadata(zeiss_metadata):
     zeiss_metadata['TLD']['Contrast'] = zeiss_metadata['ap_contrast'][1] # in %  #- There is A,B,C and D brightness?
     zeiss_metadata['Vacuum'] = {}
     zeiss_metadata['Vacuum']['ChPressure'] = zeiss_metadata['ap_system_vac'][1] # in mbar - could also be gun vacuum but unlikely here?
-    
     return zeiss_metadata
 
 def load_single_file(file, load_img=True, crop_footer=False):
@@ -436,8 +445,8 @@ def load_single_file(file, load_img=True, crop_footer=False):
             metadata = tif.sem_metadata
             system = metadata['dp_sem'][1] # Zeiss system type location
             metadata = reformat_zeiss_metadata(metadata)
-
     tif.close()
+
     if load_img == True:
         img = tf.imread(file)
         if crop_footer == True:
@@ -446,7 +455,7 @@ def load_single_file(file, load_img=True, crop_footer=False):
             print("Single file loading")
         return img, metadata
     else:
-        return metadata
+        return None, metadata
     
 def slash_type(path):
     if type(pathlib.Path(path)) is pathlib.WindowsPath:
@@ -457,7 +466,7 @@ def slash_type(path):
 
 def sys_type(metadata):
     """
-    Gives system type of the FEI/ThermoFisher microscope
+    Gives system type of the FEI/ThermoFisher or Zeiss microscope
     and analyser type 'Deflector' for Nova, 'Mirror' for Helios, 'Mirror'/'Deflector' for Zeiss
     """
     if 'Helios' in metadata['System']['SystemType']:
@@ -480,6 +489,11 @@ def template_crop(ref_img, y, x, hfw):
     temp_path = np.array([[xi, yi], [xii, yi], [xii, yii], [xi, yii], [xi, yi]])
     return ref_img[yi:yii, xi:xii], temp_path, area
 
+"""
+Image alignment.
+PCC, Translation, Template Matching.
+"""
+# Translation
 def align_img_transform(ref_img, mov_img):
     im1 = ref_img
     im2 = mov_img
@@ -499,6 +513,7 @@ def align_img_transform(ref_img, mov_img):
     reg_img = cv2.warpAffine(mov_img, warp_matrix, (w, h), flags=cv2.INTER_LINEAR + cv2.WARP_INVERSE_MAP)
     return reg_img, shift_y, shift_x
 
+# Template Matching
 def align_img_template(ref_img, mov_img, template, y, x, yi, xi):
     if y is None:
         y = ref_img.shape[0]
@@ -510,8 +525,10 @@ def align_img_template(ref_img, mov_img, template, y, x, yi, xi):
     shift_x, shift_y = np.asarray(maxpt) - (xi, yi)
     tform = transform.EuclideanTransform(translation=(shift_x, shift_y))
     reg_img = transform.warp(mov_img, tform)
+    # reg_img = np.array(reg_img)
     return reg_img, shift_y, shift_x
-
+ 
+# PCC - phase cross correlation
 def align_img_pcc(ref_img, mov_img, crop_y=None, crop_x=None, upsample_factor=10):
     if crop_y is None:
         crop_y = ref_img.shape[0]
@@ -525,6 +542,7 @@ def align_img_pcc(ref_img, mov_img, crop_y=None, crop_x=None, upsample_factor=10
     reg_img = np.array(reg_img)
     return reg_img, shift_y, shift_x
 
+# EsB grid voltages from stack metadata
 def MV(stack_meta):
     MV= []
     for page in stack_meta:
@@ -532,6 +550,7 @@ def MV(stack_meta):
     MV = np.array(MV)
     return MV
 
+# Calibration File
 def calib_file(path, filename=None):
     slash = slash_type(path)
     if filename is None:
@@ -542,6 +561,8 @@ def calib_file(path, filename=None):
             abort=True
             return 'no calibration file'
             break
+    # if abort is True:
+    #     return 'no calibration file'
     return rf'{os.path.split(path)[0]}{slash}{filename}'
 
 def conversion(stack_meta, factor, corr):
@@ -549,6 +570,7 @@ def conversion(stack_meta, factor, corr):
     print("Calibrating")
     return eV
 
+#  Generates axes labels for SE/LL-BSE spectrum plot
 def plot_axes(norm=False, x_eV=True):
     plt.rcParams['mathtext.fontset'] = 'custom'
     plt.rcParams['mathtext.it'] = 'sans:italic:bold'
@@ -576,6 +598,9 @@ def plot_scalebar(img, length_fraction=0.3, font_size=15, stack_meta=None, metad
         with tf.TiffFile(img_info) as tif:
             pixel_width = tif.fei_metadata['Scan']['PixelWidth']
         tif.close()
+    # else:
+    #     print('Provide pixel width info')
+    #     return    
     scalebar = ScaleBar(dx=pixel_width, length_fraction=length_fraction, location='lower right', border_pad=0.5, color='w', box_color='k', box_alpha=0.35, font_properties={'size': str(font_size)})
     plt.gca().add_artist(scalebar)
     if save_path is not None:
@@ -583,11 +608,14 @@ def plot_scalebar(img, length_fraction=0.3, font_size=15, stack_meta=None, metad
     if plot is True:
         plt.show()
 
+# def zpro(stack):
+#     z = []
+#     for i in np.arange(0, stack.shape[0], 1):
+#         z.append(np.mean(stack[i, :, :]))
+#     return z
+
 def zpro(stack):
-    z = []
-    for i in np.arange(0, stack.shape[0], 1):
-        z.append(np.mean(stack[i, :, :]))
-    return z
+    return [float(np.mean(stack[:,:,i])) for i in range(stack.shape[2])]
 
 def spec_dose(stack_meta):
     if 'User' in stack_meta:
@@ -701,6 +729,7 @@ def roi_masks(img, rois_data):
     else:
         rois=rois_data
     return rois
+#  Gets the xy points to draw a roi from the imageJ .roi file to a python dictionary the read_roi module can not write imageJ compatible roi files.
 def load_roi_file(path_to_roi_file):
     if '.zip' in path_to_roi_file:
         r=read_roi.read_roi_zip(path_to_roi_file)
@@ -791,6 +820,7 @@ class data:
                 stack_r = np.insert(stack_r, (x1 - x2) * [0], 0, axis=2)
                 xi = temp2.shape[1]
                 xicrop = False
+
             shifts, err, phasediff = pcc(temp1, temp2)
             ty, tx = shifts
             stack_r = scnd.shift(stack_r, shift=[0, ty, tx])
@@ -857,7 +887,8 @@ class data:
             self.stack, self.stack_meta, self.eV, self.dtype_info, self.name, self.coeffs, self.stack_filename = load(folder, calib=calib, AC=False, register=reg, uint8=force_uint8, is_zeiss=is_zeiss)
             self.shape = self.stack.shape
 
-    def rows(self, xlim=[0, 800], x_eV=True):
+#  The indexes of values within eV ranges defined by xmin and xmax.
+    def rows(self, xlim=[0, 800], x_eV=True): # Change xlim=[]
         if x_eV:
             x = self.eV
         else:
@@ -867,9 +898,11 @@ class data:
         if xlim == 'all':
             rows = self.eV.argsort()
         return rows
+    
     def mv(self):
         return MV(self.stack_meta)
-    def spec(self, rois=None, pixel_spec: int = None):
+    
+    def spec(self, rois=None, pixel_spec:int = None):
         if rois is not None:
             if pixel_spec is None:
                 r = roi_masks(self.stack, rois)
@@ -898,8 +931,10 @@ class data:
             return r
         else:
             return np.gradient(zpro(self.stack))
+        
     def spec_dose(self):
         return spec_dose(self.stack_meta)
+    
     def plot_template_roi(self):
         ref_img = self.stack_meta[f'img{len(self.stack)}']['Processing']['temp_match']['ref_img']
         temp_path = self.stack_meta[f'img{len(self.stack)}']['Processing']['temp_match']['path']
@@ -908,6 +943,7 @@ class data:
         plt.plot(temp_path[:, 0], temp_path[:, 1], c='r')
         plt.text(temp_path[0, 0] + 10, temp_path[0, 1] - 15, rf'template, area = {round(area, 3)}', backgroundcolor=(1, 1, 1, 0.3))
         plt.show()
+
     def reg_tforms(self):
         shifts = {}
         shift_x = []
@@ -923,11 +959,12 @@ class data:
                 shift_x_r.append(self.stack_meta[page]['Processing']['transformation_r']['x'])
                 shift_y_r.append(self.stack_meta[page]['Processing']['transformation_r']['y'])
             shifts[1] = np.array([shift_x_r, shift_y_r]).T
-        print(f"Shifts: {shifts}")
         return shifts
+    
     def img_avg(self):
         img = np.array(np.mean(self.stack, axis=0), dtype=self.dtype_info.dtype)
         return img
+    
     def plot_img(self, scalebar=True, plot=True, fin_img=False):
         if not fin_img:
             img = data.img_avg(self)
@@ -940,6 +977,7 @@ class data:
             plt.axis('off')
             if plot:
                 plt.show()
+
     def plot_spec(self, rois=None, groups: dict or str = None, plot=True, x_eV=True, xlim=[-1, 8], pixel_spec: int = None, smooth_width: int = None, savefig=False):
         slash = slash_type(self.folder)
         xlim = np.array(xlim)
@@ -1116,6 +1154,7 @@ class data:
             plt.show()
         if save_path is None:
             plt.show()
+
     def save_data(self, reg, save_path=None):
         slash = slash_type(self.folder)
         if save_path is None:
@@ -1130,8 +1169,8 @@ class data:
         os.makedirs(meta_path, exist_ok=True)
         pixel_width_um = self.stack_meta['img1']['Scan']['PixelWidth'] * 1e6
         esb_avg_img = data.img_avg(self)
-        tf.imwrite(rf"{esb_path}{slash}esb_avg_img.tif", data=esb_avg_img, dtype=self.dtype_info.dtype, photometric='minisblack', imagej=True, resolution=(1. / pixel_width_um, 1. / pixel_width_um), metadata={'unit': 'um', 'axes': 'YX'})
-        plot_scalebar(esb_avg_img, stack_meta=self.stack_meta, save_path=rf"{esb_path}{slash}esb_avg_img_scaled.png")
+        tf.imwrite(rf"{esb_path}{slash}_avg_img.tif", data=esb_avg_img, dtype=self.dtype_info.dtype, photometric='minisblack', imagej=True, resolution=(1. / pixel_width_um, 1. / pixel_width_um), metadata={'unit': 'um', 'axes': 'YX'})
+        plot_scalebar(esb_avg_img, stack_meta=self.stack_meta, save_path=rf"{esb_path}{slash}_avg_img_scaled.png")
         labels = []
         for i, page in enumerate(self.stack_meta):
             if 'Helios' in self.stack_meta['img1']['System']['SystemType']:
@@ -1146,12 +1185,11 @@ class data:
                     coeffs = np.loadtxt(csv_file_path)
                 mv_val = (eV_val - coeffs[1]) / coeffs[0]
             if 'Zeiss' in self.stack_meta['img1']['System']['SystemType']:
-                mv_val = self.stack_meta[page]['TLD']['Mirror']   # NOTE True? Assuming that Zeiss ESB can be considered equivalent to TLD Mirror ###########----------
+                mv_val = self.stack_meta[page]['TLD']['Mirror']   # NOTE True? Assuming that Zeiss ESB can be considered equivalent to TLD Mirror #
                 # coeffs= np.array(1) # Placeholder - need proper calibration?
                 # eht_target = self.stack_meta[page]['Beam']['HV']
                 # eV_val = np.array(eht_target - (ana_voltage*coeffs))
                 eV_val = mv_val
-
             labels.append(rf'TLD_Mirror{i + 1}_' + str(mv_val) + '.tif')
         tf.imwrite(rf"{esb_path}{slash}esb_stack.tif", self.stack, dtype=self.dtype_info.dtype, photometric='minisblack', imagej=True, resolution=(1. / pixel_width_um, 1. / pixel_width_um), metadata={'spacing': 1, 'unit': 'um', 'axes': 'ZYX', 'Labels': labels})
         with open(rf"{meta_path}{slash}esb_stack_meta.json", 'w') as f:
@@ -1159,24 +1197,24 @@ class data:
         if '_AC' in self.name and hasattr(self, 'stack_meta_r'):
             with open(rf"{meta_path}{slash}esb_stack_meta_r.json", 'w') as f:
                 json.dump(self.stack_meta_r, f, indent=2)
-        data.plot_stack_meta(self, reg, save_path=rf"{meta_path}{slash}esb_stack_meta_plots.png")
+        data.plot_stack_meta(self, reg, save_path=rf"{meta_path}{slash}_stack_meta_plots.png")
         plot_scalebar(data.img_avg(self), stack_meta=self.stack_meta, save_path=rf'{save_path}{slash}{self.name}_avg_img_scaled.png')
         readable_meta = {}
-        for key, md in self.stack_meta.items():
+        for key, metadata in self.stack_meta.items():
             readable_meta[key] = {
-                "Voltage_V": md['TLD']['Mirror'],
-                "PixelWidth_um": md['Scan']['PixelWidth'] * 1e6,
-                "PixelHeight_um": md['Scan']['PixelHeight'] * 1e6,
-                "HorFieldsize_um": md['Scan']['HorFieldsize'] * 1e6,
-                "VerFieldsize_um": md['Scan']['VerFieldsize'] * 1e6,
-                "BeamCurrent_A": md['EBeam']['BeamCurrent'],
-                "HV_kV": md['Beam']['HV'] / 1000.0,
-                "Dwell_s": md['Scan']['Dwelltime'],
-                "WD_mm": md['Stage']['WorkingDistance'] * 1e3,
-                "File_ESB": md.get('Processing', {}).get('file_esb', md.get('Processing', {}).get('file')),
-                "File_InLens": md.get('Processing', {}).get('file_inlens', None),
-                "Shift_x": md.get('Processing', {}).get('transformation', {}).get('x', None),
-                "Shift_y": md.get('Processing', {}).get('transformation', {}).get('y', None),
+                "Voltage_V": metadata['TLD']['Mirror'],
+                "PixelWidth_um": metadata['Scan']['PixelWidth'] * 1e6,
+                "PixelHeight_um": metadata['Scan']['PixelHeight'] * 1e6,
+                "HorFieldsize_um": metadata['Scan']['HorFieldsize'] * 1e6,
+                "VerFieldsize_um": metadata['Scan']['VerFieldsize'] * 1e6,
+                "BeamCurrent_A": metadata['EBeam']['BeamCurrent'],
+                "HV_kV": metadata['Beam']['HV'] / 1000.0,
+                "Dwell_s": metadata['Scan']['Dwelltime'],
+                "WD_mm": metadata['Stage']['WorkingDistance'] * 1e3,
+                "File_ESB": metadata.get('Processing', {}).get('file_esb', metadata.get('Processing', {}).get('file')),
+                "File_InLens": metadata.get('Processing', {}).get('file_inlens', None),
+                "Shift_x": metadata.get('Processing', {}).get('transformation', {}).get('x', None),
+                "Shift_y": metadata.get('Processing', {}).get('transformation', {}).get('y', None),
             }
         with open(rf"{meta_path}{slash}esb_stack_meta_readable.json", 'w') as f:
             json.dump(readable_meta, f, indent=2)
